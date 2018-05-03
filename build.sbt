@@ -2,7 +2,7 @@ organization := "com.lightbend.lagom"
 
 name := "lagom-service-locator-zookeeper"
 
-version := "1.0.0-SNAPSHOT"
+version := "1.0.2"
 
 scalaVersion := "2.12.4"
 
