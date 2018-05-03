@@ -1,6 +1,6 @@
 package com.lightbend.lagom.discovery.zookeeper
 
-import com.lightbend.lagom.javadsl.api.ServiceLocator
+import com.lightbend.lagom.scaladsl.api.ServiceLocator
 import play.api.{Configuration, Environment, Mode}
 import play.api.inject.{Binding, Module}
 

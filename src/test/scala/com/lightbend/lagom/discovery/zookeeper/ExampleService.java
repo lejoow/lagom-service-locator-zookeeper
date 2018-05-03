@@ -18,11 +18,12 @@ public class ExampleService {
             String serviceId,
             String serviceAddress,
             int servicePort,
+            String serviceUri,
             String zkServicesPath) throws Exception {
 
         // start up the ZooKeeper-based service registry
         registry = new ZooKeeperServiceRegistry(
-                ZooKeeperServiceLocator.zkUri(serviceAddress, servicePort),
+                ZooKeeperServiceLocator.zkUri(serviceAddress, servicePort, serviceUri),
                 zkServicesPath);
         registry.start();
 
@@ -50,9 +51,10 @@ public class ExampleService {
         String serviceId = "uniqueId";
         String serviceAddress = "localhost";
         int servicePort = 9000;
+        String serviceUri = "localhost:9000,localhost:10000,localhost:11000";
 
         ExampleService service = new ExampleService(
-                serviceName, serviceId, serviceAddress, servicePort, ZooKeeperServiceLocator.defaultZKServicesPath());
+                serviceName, serviceId, serviceAddress, servicePort, serviceUri, ZooKeeperServiceLocator.defaultZKServicesPath());
 
         service.stop();
     }

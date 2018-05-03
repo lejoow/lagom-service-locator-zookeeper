@@ -7,14 +7,14 @@ import java.util.concurrent.{CompletionStage, ConcurrentHashMap}
 import java.util.function.{Function => JFunction}
 import javax.inject.Inject
 
-import com.lightbend.lagom.javadsl.api.Descriptor.Call
-import com.lightbend.lagom.javadsl.api.ServiceLocator
+import com.lightbend.lagom.scaladsl.api.Descriptor.Call
+import com.lightbend.lagom.scaladsl.api.ServiceLocator
 import com.typesafe.config.ConfigException.BadValue
 import org.apache.curator.framework.{CuratorFramework, CuratorFrameworkFactory}
 import org.apache.curator.retry.ExponentialBackoffRetry
 import org.apache.curator.utils.CloseableUtils
 import org.apache.curator.x.discovery.{ServiceDiscovery, ServiceDiscoveryBuilder, ServiceInstance}
-import com.typesafe.config.{ Config => TSConfig }
+import com.typesafe.config.{Config => TSConfig}
 import play.api.{Configuration, Environment, Mode}
 
 import scala.collection.concurrent.Map
@@ -25,8 +25,9 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Random
 
 trait ZooKeeperServiceLocatorConfig {
-  def serverHostname:String
-  def serverPort:Int
+  def serverHostname:Option[String]
+  def serverPort:Option[Int]
+  def serverUri:Option[String]
   def scheme:String
   def routingPolicy:String
   def zkServicesPath:String
@@ -34,21 +35,24 @@ trait ZooKeeperServiceLocatorConfig {
 }
 
 object ZooKeeperServiceLocator {
-  case class Config(serverHostname:String,
-                    serverPort:Int,
+  case class Config(serverHostname:Option[String],
+                    serverPort:Option[Int],
+                    serverUri:Option[String],
                     scheme:String, // Technically should be another type
                     routingPolicy:String, // Technically should be another type
                     zkServicesPath:String) extends ZooKeeperServiceLocatorConfig {
-    def zkUri = ZooKeeperServiceLocator.zkUri(serverHostname,serverPort)
+    def zkUri = ZooKeeperServiceLocator.zkUri(serverHostname, serverPort, serverUri)
   }
 
-  def javaConfig(serverHostname:String,
-                 serverPort:Int,
+  def javaConfig(serverHostname:Option[String],
+                 serverPort:Option[Int],
+                 serverUri:Option[String],
                  scheme:String,
                  routingPolicy:String,
                  zkServicesPath:String): ZooKeeperServiceLocatorConfig =
     Config(serverHostname,
            serverPort,
+           serverUri,
            scheme,
            routingPolicy,
            zkServicesPath)
@@ -60,29 +64,51 @@ object ZooKeeperServiceLocator {
   def fromConfiguration(in:Configuration):Config =
     fromConfig(in.underlying)
 
-  def fromConfig(in:TSConfig):Config =
-    Config(serverHostname = in.getString("server-hostname"),
-           serverPort     = in.getInt("server-port"),
+  def getOptionalString(in: TSConfig, path: String): Option[String] =
+    if (in.hasPath(path)) {
+      Some(in.getString(path))
+    } else {
+      None
+    }
+
+  def getOptionalInt(in: TSConfig, path: String): Option[Int] =
+    if (in.hasPath(path)) {
+      Some(in.getInt(path))
+    } else {
+      None
+    }
+
+  def fromConfig(in:TSConfig): Config =
+    Config(serverHostname = getOptionalString(in, "server-hostname"),
+           serverPort     = getOptionalInt(in, "server-port"),
+           serverUri      = getOptionalString(in, "server-uri"),
            scheme         = in.getString("uri-scheme"),
            routingPolicy  = in.getString("routing-policy"),
            zkServicesPath = defaultZKServicesPath)
 
   val defaultConfigPath = "lagom.discovery.zookeeper"
   val defaultZKServicesPath = "/lagom/services"
-  def zkUri(serverHostname:String, serverPort:Int):String = s"$serverHostname:$serverPort"
+  def zkUri(serverHostname:Option[String], serverPort:Option[Int], serverUri:Option[String]): String =
+    serverUri match {
+      case Some(serverUri) => s"$serverUri"
+      case None => s"$serverHostname:$serverPort"
+    }
 }
 
-class ZooKeeperServiceLocator (serverHostname:String,
-                               serverPort:Int,
-                               scheme:String,
-                               routingPolicy:String,
-                               zkServicesPath:String,
-                               zkUri:String)(implicit ec: ExecutionContext) extends ServiceLocator with Closeable {
+class ZooKeeperServiceLocator @Inject() (serverHostname:Option[String],
+                                         serverPort:Option[Int],
+                                         serverUri:Option[String],
+                                         scheme:String,
+                                         routingPolicy:String,
+                                         zkServicesPath:String,
+                                         zkUri:String)(implicit ec: ExecutionContext) extends ServiceLocator with Closeable {
+  import ZooKeeperServiceLocator._
 
   @Inject()
   def this(config:ZooKeeperServiceLocator.Config)(implicit ec: ExecutionContext) =
     this(config.serverHostname,
          config.serverPort,
+         config.serverUri,
          config.scheme,
          config.routingPolicy,
          config.zkServicesPath,
@@ -102,17 +128,16 @@ class ZooKeeperServiceLocator (serverHostname:String,
 
   private val roundRobinIndexFor: Map[String, Int] = new ConcurrentHashMap[String, Int]().asScala
 
-  override def locate(name: String): CompletionStage[Optional[URI]] =
-    locateAsScala(name).map(_.asJava).toJava
+  override def locate(name: String): Future[Option[URI]] =
+    locateAsScala(name)
 
 
-
-  override def doWithService[T](name: String, serviceCall: Call[_, _], block: JFunction[URI, CompletionStage[T]]): CompletionStage[Optional[T]] =
+  override def doWithService[T](name: String, serviceCall: Call[_, _])(block: (URI) => Future[T])(implicit ec: ExecutionContext): Future[Option[T]] =
     locateAsScala(name).flatMap { uriOpt =>
-    uriOpt.fold(Future.successful(Optional.empty[T])) { uri =>
-      block.apply(uri).toScala.map(Optional.of(_))
+      uriOpt.fold(Future.successful(Option.empty[T])) { uri =>
+        block.apply(uri).map(Option(_))
+      }
     }
-  }.toJava
 
 
   private def locateAsScala(name: String): Future[Option[URI]] = {
@@ -168,7 +193,7 @@ class ZooKeeperServiceLocator (serverHostname:String,
       new URI(s"$scheme://$serviceAddress:${service.getPort}")
     }
 
-  override def locate(name: String, serviceCall: Call[_, _]): CompletionStage[Optional[URI]] =
-    locateAsScala(name).map(_.asJava).toJava
+  override def locate(name: String, serviceCall: Call[_, _]): Future[Option[URI]] =
+    locateAsScala(name)
 
 }
